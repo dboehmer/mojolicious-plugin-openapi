@@ -13,6 +13,9 @@ plugin OpenAPI => {url => 'data://main/cors.json'};
 
 my $t = Test::Mojo->new;
 
+$t->get_ok('/api/cors/simple', {'Content-Type' => 'text/plain', Origin => 'http://bar.example'})
+  ->status_is(400)->json_is('/errors/0/message', 'Invalid CORS request.');
+
 $t->get_ok('/api/cors/simple', {'Content-Type' => 'text/plain', Origin => 'http://foo.example'})
   ->status_is(200)->json_is('/cors', 'simple')->json_is('/origin', 'http://foo.example');
 
@@ -20,8 +23,11 @@ done_testing;
 
 sub cors_simple {
   my ($c, $args) = @_;
-  $c->stash(origin => $args->{origin});
-  $c->res->headers->header('Access-Control-Allow-Origin' => $args->{origin});
+
+  if ($args->{origin} eq 'http://foo.example') {
+    $c->stash(origin => $args->{origin});
+    $c->res->headers->header('Access-Control-Allow-Origin' => $args->{origin});
+  }
 }
 
 __DATA__

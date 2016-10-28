@@ -8,14 +8,14 @@ use constant DEBUG => $ENV{MOJO_OPENAPI_DEBUG} || 0;
 
 our $VERSION = '1.05';
 
+# https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS#Simple_requests
+our @CORS_SIMPLE_METHODS = qw(GET HEAD POST);
+our @CORS_SIMPLE_CONTENT_TYPES
+  = qw(application/x-www-form-urlencoded multipart/form-data text/plain);
+
 sub EXCEPTION { +{errors => [{message => 'Internal server error.', path => '/'}], status => 500} }
 sub NOT_FOUND { +{errors => [{message => 'Not found.',             path => '/'}], status => 404} }
 sub NOT_IMPLEMENTED { +{errors => [{message => 'Not implemented.', path => '/'}], status => 501} }
-
-# https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS#Simple_requests
-my @CORS_SIMPLE_METHODS = qw(GET HEAD POST);
-my @CORS_SIMPLE_CONTENT_TYPES
-  = qw(application/x-www-form-urlencoded multipart/form-data text/plain);
 
 my $X_RE = qr{^x-};
 
@@ -28,10 +28,9 @@ sub register {
   unless ($app->defaults->{'openapi.base_paths'}) {
     $app->helper('openapi.cors_simple' => \&_cors_simple);
     $app->helper('openapi.validate'    => \&_validate);
-    $app->helper('openapi.valid_input' =>
-        sub { !$_[0]->stash->{'openapi.invalid'} && _validate($_[0]) ? undef : $_[0] });
-    $app->helper('openapi.spec'  => \&_helper_spec);
-    $app->helper('reply.openapi' => \&_reply);
+    $app->helper('openapi.valid_input' => sub { _validate($_[0]) ? undef : $_[0] });
+    $app->helper('openapi.spec'        => \&_helper_spec);
+    $app->helper('reply.openapi'       => \&_reply);
     $app->hook(before_render => \&_before_render);
     $app->renderer->add_handler(openapi => \&_render);
     push @{$app->renderer->classes}, __PACKAGE__;
@@ -132,17 +131,26 @@ sub _cors_simple {
   my ($c, $cb) = @_;
   my $res = {};
 
+  # Run default simple CORS checks
   my $method = uc $c->req->method;
   return $c unless grep { $method eq $_ } @CORS_SIMPLE_METHODS;
-
 
   my $req_headers = $c->req->headers;
   my $ct = $req_headers->content_type || '';
   return $c unless grep { $ct eq $_ } @CORS_SIMPLE_CONTENT_TYPES;
   return $c unless $res->{origin} = $req_headers->header('Origin');
 
+  # Allow the callback to make up the deciscion if this is a valid CORS request
   $c->tap($cb, $res);
-  $c->stash('openapi.invalid' => 1) unless $c->res->headers->header('Access-Control-Allow-Origin');
+
+  # Valid CORS request if the header is set
+  return $c if $c->res->headers->header('Access-Control-Allow-Origin');
+
+  # Invalid if no header is set
+  my $self = $c->stash('openapi.object') or return;
+  my @errors = ({message => 'Invalid CORS request.'});
+  $self->_log($c, '<<<', \@errors);
+  $c->render(json => {errors => \@errors, status => 400}, status => 400);
   return $c;
 }
 
@@ -281,6 +289,9 @@ sub _validate {
   my ($c, $args) = @_;
   my $self    = $c->stash('openapi.object');
   my $op_spec = $c->openapi->spec;
+
+  # code() can be set by other methods such as cors_simple()
+  return [{message => 'Already rendered.'}] if $c->res->code;
 
   # Write validated data to $c->validation->output
   my @errors = $self->_validator->validate_request($c, $op_spec, $c->validation->output);
